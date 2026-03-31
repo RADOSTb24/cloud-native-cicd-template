@@ -1,0 +1,203 @@
+name: Uninstall Web Service Component
+
+on:
+  workflow_call:
+    inputs:
+      prod_branch:
+        description: "Production branch name for deployment trigger"
+        required: false
+        default: "main"
+        type: string
+
+      dev_branch:
+        description: "Development branch name for deployment trigger"
+        required: false
+        default: "develop"
+        type: string
+
+      component_name:
+        description: "Component logical name"
+        required: true
+        type: string
+
+      deploy_mode:
+        description: "Deployment mode: ssh or kubernetes"
+        required: true
+        type: string
+
+      container_name:
+        description: "Container name for SSH uninstall"
+        required: true
+        type: string
+
+      release_name:
+        description: "Helm release name for Kubernetes uninstall"
+        required: true
+        type: string
+
+      namespace_prod:
+        description: "Production namespace"
+        required: false
+        default: "default"
+        type: string
+
+      namespace_dev:
+        description: "Development namespace"
+        required: false
+        default: "default-dev"
+        type: string
+
+      prune_images:
+        description: "Whether to prune old Docker images on SSH target"
+        required: false
+        default: false
+        type: boolean
+
+    secrets:
+      SSH_HOST:
+        required: false
+      SSH_USER:
+        required: false
+      SSH_PRIVATE_KEY:
+        required: false
+      SSH_PORT:
+        required: false
+
+      CLOUDFLEET_ACCESS_TOKEN_ID:
+        required: false
+      CLOUDFLEET_ACCESS_TOKEN_SECRET:
+        required: false
+      CLOUDFLEET_ORGANIZATION_ID:
+        required: false
+      CLOUDFLEET_CLUSTER_ID:
+        required: false
+
+concurrency:
+  group: uninstall-${{ inputs.component_name }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.vars.outputs.environment }}
+      namespace: ${{ steps.vars.outputs.namespace }}
+    steps:
+      - id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ inputs.deploy_mode }}" != "ssh" && "${{ inputs.deploy_mode }}" != "kubernetes" ]]; then
+            echo "Invalid deploy_mode"
+            exit 1
+          fi
+            
+          if [ "${GITHUB_REF_NAME}" = "${{ inputs.prod_branch }}" ]; then
+            echo "environment=production" >> "$GITHUB_OUTPUT"
+            echo "namespace=${{ inputs.namespace_prod }}" >> "$GITHUB_OUTPUT"
+          elif [ "${GITHUB_REF_NAME}" = "${{ inputs.dev_branch }}" ]; then
+            echo "environment=development" >> "$GITHUB_OUTPUT"
+            echo "namespace=${{ inputs.namespace_dev }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unsupported branch: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+  uninstall-on-ssh:
+    runs-on: ubuntu-latest
+    if: ${{ inputs.deploy_mode == 'ssh' }}
+    needs: prepare
+    environment: ${{ needs.prepare.outputs.environment }}
+
+    steps:
+      - name: Check required SSH secrets
+        shell: bash
+        run: |
+          set -e
+          [ -n "${{ secrets.SSH_HOST }}" ] || { echo "SSH_HOST is required"; exit 1; }
+          [ -n "${{ secrets.SSH_USER }}" ] || { echo "SSH_USER is required"; exit 1; }
+          [ -n "${{ secrets.SSH_PRIVATE_KEY }}" ] || { echo "SSH_PRIVATE_KEY is required"; exit 1; }
+          [ -n "${{ secrets.SSH_PORT }}" ] || { echo "SSH_PORT is required"; exit 1; }
+      - name: Remove container over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          CONTAINER_NAME: ${{ inputs.container_name }}
+          PRUNE_IMAGES: ${{ inputs.prune_images }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          envs: CONTAINER_NAME,PRUNE_IMAGES
+          script: |
+            set -euo pipefail
+
+            docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
+            if [ "$PRUNE_IMAGES" = "true" ]; then
+              docker image prune -af --filter "until=72h" || true
+              docker builder prune -af --filter "until=72h" || true
+            fi
+            
+            if docker ps -a --format '{{.Names}}' | grep -w "$CONTAINER_NAME"; then
+             echo "Container still exists after uninstall"
+             exit 1
+            fi
+
+  uninstall-on-k8s:
+    runs-on: ubuntu-latest
+    if: ${{ inputs.deploy_mode == 'kubernetes' }}
+    needs: prepare
+    environment: ${{ needs.prepare.outputs.environment }}
+    env:
+      NAMESPACE: ${{ needs.prepare.outputs.namespace }}
+
+    steps:
+      - name: Check required CLOUDFLEET secrets
+        shell: bash
+        run: |
+          set -e
+          [ -n "${{ secrets.CLOUDFLEET_ACCESS_TOKEN_ID }}" ] || { echo "CLOUDFLEET_ACCESS_TOKEN_ID is required"; exit 1; }
+          [ -n "${{ secrets.CLOUDFLEET_ACCESS_TOKEN_SECRET }}" ] || { echo "CLOUDFLEET_ACCESS_TOKEN_SECRET is required"; exit 1; }
+          [ -n "${{ secrets.CLOUDFLEET_ORGANIZATION_ID }}" ] || { echo "CLOUDFLEET_ORGANIZATION_ID is required"; exit 1; }
+          [ -n "${{ secrets.CLOUDFLEET_CLUSTER_ID }}" ] || { echo "CLOUDFLEET_CLUSTER_ID is required"; exit 1; }
+      - name: Install Cloudfleet CLI
+        env:
+          NONINTERACTIVE: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://downloads.cloudfleet.ai/apt/pubkey.gpg | sudo tee /usr/share/keyrings/cloudfleet-archive-keyring.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/cloudfleet-archive-keyring.gpg] https://downloads.cloudfleet.ai/apt stable main" | sudo tee /etc/apt/sources.list.d/cloudfleet.list
+          sudo apt update
+          sudo apt install -y cloudfleet
+
+      - name: Configure kubeconfig
+        shell: bash
+        run: |
+          set -euo pipefail
+          cloudfleet clusters kubeconfig ${{ secrets.CLOUDFLEET_CLUSTER_ID }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: latest
+
+      - name: Uninstall Helm release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if helm status "${{ inputs.release_name }}" --namespace "${NAMESPACE}" >/dev/null 2>&1; then
+            helm uninstall "${{ inputs.release_name }}" --namespace "${NAMESPACE}"
+          else
+           echo "Helm release '${{ inputs.release_name }}' not found in namespace '${NAMESPACE}', skipping uninstall"
+          fi
+          
+          if helm status "${{ inputs.release_name }}" --namespace "${NAMESPACE}" >/dev/null 2>&1; then
+            echo "Helm release still exists after uninstall"
+            exit 1
+          fi

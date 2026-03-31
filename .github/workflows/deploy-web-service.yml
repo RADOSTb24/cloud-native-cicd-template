@@ -1,0 +1,467 @@
+name: Deploy Web Service Component
+
+on:
+  workflow_call:
+    inputs:
+      prod_branch:
+        description: "Production branch name for deployment trigger"
+        required: false
+        default: "main"
+        type: string
+
+      dev_branch:
+        description: "Development branch name for deployment trigger"
+        required: false
+        default: "develop"
+        type: string
+
+      component_name:
+        description: "Component logical name"
+        required: true
+        type: string
+
+      deploy_mode:
+        description: "Deployment mode: ssh or kubernetes"
+        required: true
+        type: string
+
+      image_name:
+        description: "Image name without registry, for example company/backend"
+        required: true
+        type: string
+
+      container_name:
+        description: "Container name for SSH deploy"
+        required: true
+        type: string
+
+      container_env_vars:
+        description: "Optional extra docker run env arguments"
+        required: false
+        default: ""
+        type: string
+
+      release_name:
+        description: "Helm release name"
+        required: true
+        type: string
+
+      app_port:
+        description: "Container port"
+        required: true
+        type: string
+
+      host_port:
+        description: "Host port for SSH deploy"
+        required: false
+        default: ""
+        type: string
+
+      namespace_prod:
+        description: "Production namespace"
+        required: false
+        default: "default"
+        type: string
+
+      namespace_dev:
+        description: "Development namespace"
+        required: false
+        default: "default-dev"
+        type: string
+
+      stable_tag_prod:
+        description: "Stable image tag for production"
+        required: false
+        default: "production"
+        type: string
+
+      stable_tag_dev:
+        description: "Stable image tag for development"
+        required: false
+        default: "development"
+        type: string
+
+      verify_rollout_name:
+        description: "Deployment name for rollout verification"
+        required: false
+        default: ""
+        type: string
+
+      docker_context:
+        description: "Docker build context"
+        required: false
+        default: "."
+        type: string
+
+      dockerfile:
+        description: "Dockerfile path"
+        required: false
+        default: "./Dockerfile"
+        type: string
+
+      test_command:
+        description: "Optional test command"
+        required: false
+        default: ""
+        type: string
+
+      test_language:
+        required: false
+        default: ""
+        type: string
+
+      java_version:
+        required: false
+        default: "17"
+        type: string
+
+      node_version:
+        required: false
+        default: "18"
+        type: string
+
+      python_version:
+        required: false
+        default: "3.11"
+        type: string
+
+      build_args:
+        description: "Optional multiline Docker build args"
+        required: false
+        default: ""
+        type: string
+
+      chart_path:
+        description: "Helm chart path"
+        required: false
+        default: "helm"
+        type: string
+
+      values_files:
+        description: "Multiline list of Helm values files"
+        required: false
+        default: "values.yaml"
+        type: string
+
+    secrets:
+      GHCR_USERNAME:
+        required: true
+      GHCR_PAT:
+        required: true
+
+      SSH_HOST:
+        required: false
+      SSH_USER:
+        required: false
+      SSH_PRIVATE_KEY:
+        required: false
+      SSH_PORT:
+        required: false
+
+      CLOUDFLEET_ACCESS_TOKEN_ID:
+        required: false
+      CLOUDFLEET_ACCESS_TOKEN_SECRET:
+        required: false
+      CLOUDFLEET_ORGANIZATION_ID:
+        required: false
+      CLOUDFLEET_CLUSTER_ID:
+        required: false
+
+concurrency:
+  group: deploy-${{ inputs.component_name }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.vars.outputs.environment }}
+      namespace: ${{ steps.vars.outputs.namespace }}
+      stable_tag: ${{ steps.vars.outputs.stable_tag }}
+      image_tag: ${{ steps.vars.outputs.image_tag }}
+      image_ref: ${{ steps.vars.outputs.image_ref }}
+    steps:
+      - id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          if [[ "${{ inputs.deploy_mode }}" != "ssh" && "${{ inputs.deploy_mode }}" != "kubernetes" ]]; then
+            echo "Invalid deploy_mode"
+            exit 1
+          fi
+          
+          if [ "${GITHUB_REF_NAME}" = "${{ inputs.prod_branch }}" ]; then
+            echo "environment=production" >> "$GITHUB_OUTPUT"
+            echo "namespace=${{ inputs.namespace_prod }}" >> "$GITHUB_OUTPUT"
+            echo "stable_tag=${{ inputs.stable_tag_prod }}" >> "$GITHUB_OUTPUT"
+          elif [ "${GITHUB_REF_NAME}" = "${{ inputs.dev_branch }}" ]; then
+            echo "environment=development" >> "$GITHUB_OUTPUT"
+            echo "namespace=${{ inputs.namespace_dev }}" >> "$GITHUB_OUTPUT"
+            echo "stable_tag=${{ inputs.stable_tag_dev }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unsupported branch: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IMAGE_TAG="${GITHUB_REF_NAME}-${SHORT_SHA}"
+
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "image_ref=${{ env.REGISTRY }}/${{ inputs.image_name }}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+  test:
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: ${{ inputs.test_command != '' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        if: ${{ inputs.test_language == 'java' }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+          cache: maven
+
+      - name: Set up Node.js
+        if: ${{ inputs.test_language == 'node' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Set up Python
+        if: ${{ inputs.test_language == 'python' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Run tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ${{ inputs.test_command }}
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: [prepare, test]
+    if: ${{ always() && needs.prepare.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    environment: ${{ needs.prepare.outputs.environment }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.docker_context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: |
+            ${{ needs.prepare.outputs.image_ref }}
+            ${{ env.REGISTRY }}/${{ inputs.image_name }}:${{ needs.prepare.outputs.stable_tag }}
+          build-args: |
+            ${{ inputs.build_args }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-on-ssh:
+    runs-on: ubuntu-latest
+    if: ${{ github.ref_name == inputs.dev_branch && inputs.deploy_mode == 'ssh' }}
+    needs: [prepare, build-and-push]
+    environment: ${{ needs.prepare.outputs.environment }}
+
+    steps:
+      - name: Check required SSH secrets
+        shell: bash
+        run: |
+          set -e
+          [ -n "${{ secrets.SSH_HOST }}" ] || { echo "SSH_HOST is required"; exit 1; }
+          [ -n "${{ secrets.SSH_USER }}" ] || { echo "SSH_USER is required"; exit 1; }
+          [ -n "${{ secrets.SSH_PRIVATE_KEY }}" ] || { echo "SSH_PRIVATE_KEY is required"; exit 1; }
+          [ -n "${{ secrets.SSH_PORT }}" ] || { echo "SSH_PORT is required"; exit 1; }
+
+      - name: Deploy to server over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          IMAGE_REF: ${{ needs.prepare.outputs.image_ref }}
+          CONTAINER_NAME: ${{ inputs.container_name }}
+          APP_PORT: ${{ inputs.app_port }}
+          HOST_PORT: ${{ inputs.host_port }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PAT }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          envs: IMAGE_REF,CONTAINER_NAME,APP_PORT,HOST_PORT,GHCR_USERNAME,GHCR_TOKEN
+          script: |
+            set -euo pipefail
+
+            echo "$GHCR_TOKEN" | docker login ${{ env.REGISTRY }} -u "$GHCR_USERNAME" --password-stdin
+            
+            for i in {1..3}; do
+              docker pull "$IMAGE_REF" && break || sleep 5
+            done
+
+            docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
+            if [ -n "$HOST_PORT" ]; then
+              docker run -d \
+                --name "$CONTAINER_NAME" \
+                --restart unless-stopped \
+                -p "${HOST_PORT}:${APP_PORT}" \
+                ${{ inputs.container_env_vars }} \
+                "$IMAGE_REF"
+             else
+              docker run -d \
+                --name "$CONTAINER_NAME" \
+                --restart unless-stopped \
+                ${{ inputs.container_env_vars }} \
+                "$IMAGE_REF"
+            fi
+            
+            sleep 5
+            docker ps --filter "name=$CONTAINER_NAME" --filter "status=running" | grep "$CONTAINER_NAME"
+          
+            docker container prune -f
+            docker image prune -af --filter "until=72h"
+            docker builder prune -af --filter "until=72h" || true
+
+  deploy-on-k8s:
+    runs-on: ubuntu-latest
+    if: ${{ inputs.deploy_mode == 'kubernetes' && (github.ref_name == inputs.prod_branch || github.ref_name == inputs.dev_branch) }}
+    needs: [prepare, build-and-push]
+    environment: ${{ needs.prepare.outputs.environment }}
+    permissions:
+      contents: read
+    env:
+      CLOUDFLEET_ACCESS_TOKEN_ID: ${{ secrets.CLOUDFLEET_ACCESS_TOKEN_ID }}
+      CLOUDFLEET_ACCESS_TOKEN_SECRET: ${{ secrets.CLOUDFLEET_ACCESS_TOKEN_SECRET }}
+      CLOUDFLEET_ORGANIZATION_ID: ${{ secrets.CLOUDFLEET_ORGANIZATION_ID }}
+      NAMESPACE: ${{ needs.prepare.outputs.namespace }}
+
+    steps:
+      - name: Check required CLOUDFLEET secrets
+        shell: bash
+        run: |
+          set -e
+          [ -n "${{ secrets.CLOUDFLEET_ACCESS_TOKEN_ID }}" ] || { echo "CLOUDFLEET_ACCESS_TOKEN_ID is required"; exit 1; }
+          [ -n "${{ secrets.CLOUDFLEET_ACCESS_TOKEN_SECRET }}" ] || { echo "CLOUDFLEET_ACCESS_TOKEN_SECRET is required"; exit 1; }
+          [ -n "${{ secrets.CLOUDFLEET_ORGANIZATION_ID }}" ] || { echo "CLOUDFLEET_ORGANIZATION_ID is required"; exit 1; }
+          [ -n "${{ secrets.CLOUDFLEET_CLUSTER_ID }}" ] || { echo "CLOUDFLEET_CLUSTER_ID is required"; exit 1; }
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Cloudfleet CLI
+        env:
+          NONINTERACTIVE: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://downloads.cloudfleet.ai/apt/pubkey.gpg | sudo tee /usr/share/keyrings/cloudfleet-archive-keyring.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/cloudfleet-archive-keyring.gpg] https://downloads.cloudfleet.ai/apt stable main" | sudo tee /etc/apt/sources.list.d/cloudfleet.list
+          sudo apt update
+          sudo apt install -y cloudfleet
+
+      - name: Configure kubeconfig
+        shell: bash
+        run: |
+          set -euo pipefail
+          cloudfleet clusters kubeconfig ${{ secrets.CLOUDFLEET_CLUSTER_ID }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: latest
+
+      - name: Ensure namespace and registry secret exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+
+          if ! kubectl get secret ghcr-secret --namespace "${NAMESPACE}" >/dev/null 2>&1; then
+            kubectl create secret docker-registry ghcr-secret \
+              --namespace "${NAMESPACE}" \
+              --docker-server=${{ env.REGISTRY }} \
+              --docker-username="${{ secrets.GHCR_USERNAME }}" \
+              --docker-password="${{ secrets.GHCR_PAT }}"
+          fi
+
+      - name: Deploy to Kubernetes
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          VALUES_ARGS=()
+
+          if [ -n "${{ inputs.values_files }}" ]; then
+            while IFS= read -r file; do
+              if [ -n "$file" ]; then
+                VALUES_ARGS+=(-f "$file")
+              fi
+            done <<'EOF'
+          ${{ inputs.values_files }}
+          EOF
+          fi
+  
+          helm upgrade --install "${{ inputs.release_name }}" ./"${{ inputs.chart_path }}" \
+            "${VALUES_ARGS[@]}" \
+            --namespace "${NAMESPACE}" \
+            --create-namespace \
+            --set image.repository=${{ env.REGISTRY }} \
+            --set image.image=${{ inputs.image_name }} \
+            --set image.tag=${{ needs.prepare.outputs.image_tag }}
+
+      - name: Verify imagePullSecrets configuration
+        if: ${{ inputs.verify_rollout_name != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_PULL_SECRETS=$(kubectl get deployment "${{ inputs.verify_rollout_name }}" \
+            --namespace "${NAMESPACE}" \
+            -o jsonpath='{.spec.template.spec.imagePullSecrets[*].name}')
+
+          echo "Deployment imagePullSecrets: ${IMAGE_PULL_SECRETS}"
+
+          if [[ "${IMAGE_PULL_SECRETS}" != *ghcr-secret* ]]; then
+            echo "Deployment '${{ inputs.verify_rollout_name }}' does not reference ghcr-secret"
+            exit 1
+          fi
+      - name: Verify rollout
+        if: ${{ inputs.verify_rollout_name != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl rollout status deployment/${{ inputs.verify_rollout_name }} --namespace "${NAMESPACE}" --timeout=180s
+          
+          if kubectl get pods -n "${NAMESPACE}" | grep -E 'ImagePullBackOff|ErrImagePull'; then
+            echo "Detected image pull errors after rollout"
+            exit 1
+          fi
