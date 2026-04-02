@@ -153,6 +153,10 @@ jobs:
     environment: ${{ needs.prepare.outputs.environment }}
     env:
       NAMESPACE: ${{ needs.prepare.outputs.namespace }}
+      CLOUDFLEET_ACCESS_TOKEN_ID: ${{ secrets.CLOUDFLEET_ACCESS_TOKEN_ID }}
+      CLOUDFLEET_ACCESS_TOKEN_SECRET: ${{ secrets.CLOUDFLEET_ACCESS_TOKEN_SECRET }}
+      CLOUDFLEET_ORGANIZATION_ID: ${{ secrets.CLOUDFLEET_ORGANIZATION_ID }}
+      CLOUDFLEET_CLUSTER_ID: ${{ secrets.CLOUDFLEET_CLUSTER_ID }}
 
     steps:
       - name: Check required CLOUDFLEET secrets
