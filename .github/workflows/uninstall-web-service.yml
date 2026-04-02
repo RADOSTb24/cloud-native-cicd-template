@@ -92,7 +92,7 @@ jobs:
             echo "Invalid deploy_mode"
             exit 1
           fi
-            
+
           if [ "${GITHUB_REF_NAME}" = "${{ inputs.prod_branch }}" ]; then
             echo "environment=production" >> "$GITHUB_OUTPUT"
             echo "namespace=${{ inputs.namespace_prod }}" >> "$GITHUB_OUTPUT"
@@ -119,6 +119,7 @@ jobs:
           [ -n "${{ secrets.SSH_USER }}" ] || { echo "SSH_USER is required"; exit 1; }
           [ -n "${{ secrets.SSH_PRIVATE_KEY }}" ] || { echo "SSH_PRIVATE_KEY is required"; exit 1; }
           [ -n "${{ secrets.SSH_PORT }}" ] || { echo "SSH_PORT is required"; exit 1; }
+
       - name: Remove container over SSH
         uses: appleboy/ssh-action@v1.2.0
         env:
@@ -139,10 +140,10 @@ jobs:
               docker image prune -af --filter "until=72h" || true
               docker builder prune -af --filter "until=72h" || true
             fi
-            
+
             if docker ps -a --format '{{.Names}}' | grep -w "$CONTAINER_NAME"; then
-             echo "Container still exists after uninstall"
-             exit 1
+              echo "Container still exists after uninstall"
+              exit 1
             fi
 
   uninstall-on-k8s:
@@ -162,6 +163,7 @@ jobs:
           [ -n "${{ secrets.CLOUDFLEET_ACCESS_TOKEN_SECRET }}" ] || { echo "CLOUDFLEET_ACCESS_TOKEN_SECRET is required"; exit 1; }
           [ -n "${{ secrets.CLOUDFLEET_ORGANIZATION_ID }}" ] || { echo "CLOUDFLEET_ORGANIZATION_ID is required"; exit 1; }
           [ -n "${{ secrets.CLOUDFLEET_CLUSTER_ID }}" ] || { echo "CLOUDFLEET_CLUSTER_ID is required"; exit 1; }
+
       - name: Install Cloudfleet CLI
         env:
           NONINTERACTIVE: 1
@@ -191,12 +193,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           if helm status "${{ inputs.release_name }}" --namespace "${NAMESPACE}" >/dev/null 2>&1; then
             helm uninstall "${{ inputs.release_name }}" --namespace "${NAMESPACE}"
           else
-           echo "Helm release '${{ inputs.release_name }}' not found in namespace '${NAMESPACE}', skipping uninstall"
+            echo "Helm release '${{ inputs.release_name }}' not found in namespace '${NAMESPACE}', skipping uninstall"
           fi
-          
+
           if helm status "${{ inputs.release_name }}" --namespace "${NAMESPACE}" >/dev/null 2>&1; then
             echo "Helm release still exists after uninstall"
             exit 1

@@ -36,6 +36,7 @@ on:
         type: string
 
       container_env_vars:
+        description: "Optional extra docker run env arguments"
         required: false
         default: ""
         type: string
@@ -141,7 +142,7 @@ jobs:
             echo "Invalid deploy_mode"
             exit 1
           fi
-          
+
           if [ "${GITHUB_REF_NAME}" = "${{ inputs.prod_branch }}" ]; then
             echo "environment=production" >> "$GITHUB_OUTPUT"
             echo "namespace=${{ inputs.namespace_prod }}" >> "$GITHUB_OUTPUT"
@@ -153,7 +154,7 @@ jobs:
             echo "stable_tag=${{ inputs.stable_tag_dev }}" >> "$GITHUB_OUTPUT"
             echo "stable_image_ref=${{ env.REGISTRY }}/${{ inputs.image_name }}:${{ inputs.stable_tag_dev }}" >> "$GITHUB_OUTPUT"
           else
-          echo "Unsupported branch: ${GITHUB_REF_NAME}"
+            echo "Unsupported branch: ${GITHUB_REF_NAME}"
             exit 1
           fi
 
@@ -164,7 +165,7 @@ jobs:
     environment: ${{ needs.prepare.outputs.environment }}
 
     steps:
-      - name: Check required SSH secrets
+      - name: Check required SSH and GHCR secrets
         shell: bash
         run: |
           set -e
@@ -172,6 +173,9 @@ jobs:
           [ -n "${{ secrets.SSH_USER }}" ] || { echo "SSH_USER is required"; exit 1; }
           [ -n "${{ secrets.SSH_PRIVATE_KEY }}" ] || { echo "SSH_PRIVATE_KEY is required"; exit 1; }
           [ -n "${{ secrets.SSH_PORT }}" ] || { echo "SSH_PORT is required"; exit 1; }
+          [ -n "${{ secrets.GHCR_USERNAME }}" ] || { echo "GHCR_USERNAME is required"; exit 1; }
+          [ -n "${{ secrets.GHCR_PAT }}" ] || { echo "GHCR_PAT is required"; exit 1; }
+
       - name: Rollback container over SSH
         uses: appleboy/ssh-action@v1.2.0
         env:
@@ -190,11 +194,8 @@ jobs:
           script: |
             set -euo pipefail
 
-            [ -n "${{ secrets.GHCR_USERNAME }}" ] || { echo "GHCR_USERNAME is required"; exit 1; }
-            [ -n "${{ secrets.GHCR_PAT }}" ] || { echo "GHCR_PAT is required"; exit 1; }
-          
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
-            
+
             for i in {1..3}; do
               docker pull "$IMAGE_REF" && break || sleep 5
             done
@@ -215,7 +216,7 @@ jobs:
                 ${{ inputs.container_env_vars }} \
                 "$IMAGE_REF"
             fi
-            
+
             sleep 5
             docker ps --filter "name=$CONTAINER_NAME" --filter "status=running" | grep "$CONTAINER_NAME"
 
@@ -239,6 +240,7 @@ jobs:
           [ -n "${{ secrets.CLOUDFLEET_ACCESS_TOKEN_SECRET }}" ] || { echo "CLOUDFLEET_ACCESS_TOKEN_SECRET is required"; exit 1; }
           [ -n "${{ secrets.CLOUDFLEET_ORGANIZATION_ID }}" ] || { echo "CLOUDFLEET_ORGANIZATION_ID is required"; exit 1; }
           [ -n "${{ secrets.CLOUDFLEET_CLUSTER_ID }}" ] || { echo "CLOUDFLEET_CLUSTER_ID is required"; exit 1; }
+
       - name: Install Cloudfleet CLI
         env:
           NONINTERACTIVE: 1
@@ -276,10 +278,10 @@ jobs:
           fi
 
           PREV_REVISION=$(helm history "${{ inputs.release_name }}" -n "${NAMESPACE}" \
-          | awk 'NR>2 {print $1}' \
-          | tail -n 2 \
-          | head -n 1)
-          
+            | awk 'NR>2 {print $1}' \
+            | tail -n 2 \
+            | head -n 1)
+
           if [ -z "${PREV_REVISION}" ] || [ "${PREV_REVISION}" = "null" ]; then
             echo "No previous Helm revision found for rollback" >&2
             exit 1
@@ -316,7 +318,7 @@ jobs:
         run: |
           set -euo pipefail
           kubectl rollout status deployment/${{ inputs.verify_rollout_name }} --namespace "${NAMESPACE}" --timeout=180s
-          
+
           if kubectl get pods -n "${NAMESPACE}" | grep -E 'ImagePullBackOff|ErrImagePull'; then
             echo "Detected image pull errors after rollout"
             exit 1
