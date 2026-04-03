@@ -1,0 +1,10 @@
+image:
+  tag: development
+  pullPolicy: Always
+
+configMap:
+  data:
+    APP_ENV: development
+
+hpa:
+  enabled: false

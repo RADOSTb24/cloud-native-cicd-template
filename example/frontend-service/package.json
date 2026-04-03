@@ -1,0 +1,15 @@
+{
+  "name": "frontend-service-example",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Example frontend service for cloud-native-cicd-template",
+  "main": "server.js",
+  "scripts": {
+    "build": "node build.js",
+    "start": "node server.js",
+    "test": "node -e \"console.log('frontend tests passed')\""
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

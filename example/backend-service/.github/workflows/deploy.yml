@@ -1,0 +1,43 @@
+name: Deploy backend example
+
+on:
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    uses: RADOSTb24/cloud-native-cicd-template/.github/workflows/deploy-web-service.yml@master
+    with:
+      component_name: backend
+      deploy_mode: kubernetes
+      image_name: example/backend-service
+      container_name: example-backend
+      release_name: backend
+      app_port: "8080"
+      host_port: "8080"
+      namespace_prod: example-prod
+      namespace_dev: example-dev
+
+      templates_repo: RADOSTb24/cloud-native-cicd-template
+      templates_ref: v1
+      templates_chart_path: helm/web-service
+
+      values_files: |
+        deploy/values.yaml
+        deploy/values-${{ github.ref_name == 'main' && 'prod' || 'dev' }}.yaml
+
+      docker_context: .
+      dockerfile: ./Dockerfile
+      test_command: npm test
+      test_language: node
+      node_version: "20"
+      verify_rollout_name: backend
+    secrets:
+      GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+      GHCR_PAT: ${{ secrets.GHCR_PAT }}
+      TEMPLATES_REPO_TOKEN: ${{ secrets.TEMPLATES_REPO_TOKEN }}
+      CLOUDFLEET_ACCESS_TOKEN_ID: ${{ secrets.CLOUDFLEET_ACCESS_TOKEN_ID }}
+      CLOUDFLEET_ACCESS_TOKEN_SECRET: ${{ secrets.CLOUDFLEET_ACCESS_TOKEN_SECRET }}
+      CLOUDFLEET_ORGANIZATION_ID: ${{ secrets.CLOUDFLEET_ORGANIZATION_ID }}
+      CLOUDFLEET_CLUSTER_ID: ${{ secrets.CLOUDFLEET_CLUSTER_ID }}

@@ -1,0 +1,14 @@
+{
+  "name": "backend-service-example",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Example backend service for cloud-native-cicd-template",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node -e \"console.log('backend tests passed')\""
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

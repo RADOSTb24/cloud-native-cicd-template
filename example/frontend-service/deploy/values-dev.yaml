@@ -1,0 +1,17 @@
+image:
+  tag: development
+  pullPolicy: Always
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: frontend-dev.example.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+hpa:
+  enabled: false

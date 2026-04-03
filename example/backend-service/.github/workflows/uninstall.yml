@@ -1,0 +1,25 @@
+name: Uninstall backend example
+
+on:
+  workflow_dispatch:
+
+jobs:
+  uninstall:
+    uses: RADOSTb24/cloud-native-cicd-template/.github/workflows/uninstall-web-service.yml@master
+    with:
+      component_name: backend
+      deploy_mode: kubernetes
+      container_name: example-backend
+      release_name: backend
+      namespace_prod: example-prod
+      namespace_dev: example-dev
+      prune_images: false
+    secrets:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SSH_PORT: ${{ secrets.SSH_PORT }}
+      CLOUDFLEET_ACCESS_TOKEN_ID: ${{ secrets.CLOUDFLEET_ACCESS_TOKEN_ID }}
+      CLOUDFLEET_ACCESS_TOKEN_SECRET: ${{ secrets.CLOUDFLEET_ACCESS_TOKEN_SECRET }}
+      CLOUDFLEET_ORGANIZATION_ID: ${{ secrets.CLOUDFLEET_ORGANIZATION_ID }}
+      CLOUDFLEET_CLUSTER_ID: ${{ secrets.CLOUDFLEET_CLUSTER_ID }}
