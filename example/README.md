@@ -130,10 +130,6 @@ jobs:
 - GHCR_USERNAME
 - GHCR_PAT
 
-### Template Repository Access
-
-- TEMPLATES_REPO_TOKEN
-
 ### Kubernetes Access
 
 - CLOUDFLEET_ACCESS_TOKEN_ID

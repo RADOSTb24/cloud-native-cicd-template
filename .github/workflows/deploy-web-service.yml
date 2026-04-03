@@ -161,10 +161,6 @@ on:
         required: true
       GHCR_PAT:
         required: true
-
-      TEMPLATES_REPO_TOKEN:
-        required: true
-
       SSH_HOST:
         required: false
       SSH_USER:
@@ -388,7 +384,6 @@ jobs:
           [ -n "${{ secrets.CLOUDFLEET_ACCESS_TOKEN_SECRET }}" ] || { echo "CLOUDFLEET_ACCESS_TOKEN_SECRET is required"; exit 1; }
           [ -n "${{ secrets.CLOUDFLEET_ORGANIZATION_ID }}" ] || { echo "CLOUDFLEET_ORGANIZATION_ID is required"; exit 1; }
           [ -n "${{ secrets.CLOUDFLEET_CLUSTER_ID }}" ] || { echo "CLOUDFLEET_CLUSTER_ID is required"; exit 1; }
-          [ -n "${{ secrets.TEMPLATES_REPO_TOKEN }}" ] || { echo "TEMPLATES_REPO_TOKEN is required"; exit 1; }
 
       - name: Checkout caller repository
         uses: actions/checkout@v4
@@ -400,7 +395,6 @@ jobs:
         with:
           repository: ${{ inputs.templates_repo }}
           ref: ${{ inputs.templates_ref }}
-          token: ${{ secrets.TEMPLATES_REPO_TOKEN }}
           path: helm-chart
           sparse-checkout: |
             ${{ inputs.templates_chart_path }}
