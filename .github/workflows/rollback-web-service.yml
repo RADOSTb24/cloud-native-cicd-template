@@ -38,7 +38,7 @@ on:
       container_env_file:
         description: "Path to env file for SSH rollback. If CONTAINER_ENV_FILE secret is set, its content is written to this path."
         required: false
-        default: "~/env/.env"
+        default: "{HOME}/env/.env"
         type: string
 
       container_env_vars:
@@ -235,10 +235,18 @@ jobs:
               exit 1
             fi
 
+            # Expand ~/path to an absolute path because docker does not expand '~' in --env-file.
+            if [[ "$ENV_FILE_PATH" == ~/* ]]; then
+              ENV_FILE_PATH="${HOME}/${ENV_FILE_PATH#~/}"
+            fi
+
             if [ -n "$CONTAINER_ENV_FILE_SECRET" ]; then
               mkdir -p "$(dirname "$ENV_FILE_PATH")"
               printf '%s' "$CONTAINER_ENV_FILE_SECRET" > "$ENV_FILE_PATH"
               chmod 600 "$ENV_FILE_PATH"
+            elif [ ! -f "$ENV_FILE_PATH" ]; then
+              echo "Env file not found: $ENV_FILE_PATH. Provide inputs.container_env_file with an existing path or set CONTAINER_ENV_FILE secret with .env content."
+              exit 1
             fi
 
             if [ -n "$HOST_PORT" ]; then
