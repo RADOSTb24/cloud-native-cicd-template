@@ -580,14 +580,11 @@ jobs:
         always() 
         && needs.prepare.result == 'success' 
         && needs.build-and-push.result == 'success' 
-        && (
-              !inputs.security_fail_on_findings
-              || needs.security-scan.outputs.passed == 'true'
-            )
+        && !inputs.security_fail_on_findings
         && (github.ref_name == inputs.prod_branch || github.ref_name == inputs.dev_branch) 
         && inputs.deploy_mode == 'ssh' 
       }}
-    needs: [prepare, build-and-push, security-scan]
+    needs: [prepare, build-and-push]
     environment: ${{ needs.prepare.outputs.environment }}
 
     steps:
@@ -675,6 +672,106 @@ jobs:
             docker image prune -af --filter "until=72h"
             docker builder prune -af --filter "until=72h" || true
 
+  deploy-on-ssh-gated:
+    runs-on: ubuntu-latest
+    if: >
+      ${{
+        always()
+        && needs.prepare.result == 'success'
+        && needs.build-and-push.result == 'success'
+        && inputs.security_fail_on_findings
+        && (!inputs.security_enabled || needs.security-scan.outputs.passed == 'true')
+        && (github.ref_name == inputs.prod_branch || github.ref_name == inputs.dev_branch)
+        && inputs.deploy_mode == 'ssh'
+      }}
+    needs: [prepare, build-and-push, security-scan]
+    environment: ${{ needs.prepare.outputs.environment }}
+
+    steps:
+      - name: Check required SSH secrets
+        shell: bash
+        run: |
+          set -e
+          [ -n "${{ secrets.SSH_HOST }}" ] || { echo "SSH_HOST is required"; exit 1; }
+          [ -n "${{ secrets.SSH_USER }}" ] || { echo "SSH_USER is required"; exit 1; }
+          [ -n "${{ secrets.SSH_PRIVATE_KEY }}" ] || { echo "SSH_PRIVATE_KEY is required"; exit 1; }
+          [ -n "${{ secrets.SSH_PORT }}" ] || { echo "SSH_PORT is required"; exit 1; }
+          [ -n "${{ secrets.GHCR_USERNAME }}" ] || { echo "GHCR_USERNAME is required"; exit 1; }
+          [ -n "${{ secrets.GHCR_PAT }}" ] || { echo "GHCR_PAT is required"; exit 1; }
+
+      - name: Deploy to server over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          IMAGE_REF: ${{ needs.prepare.outputs.image_ref }}
+          CONTAINER_NAME: ${{ inputs.container_name }}
+          APP_PORT: ${{ inputs.app_port }}
+          HOST_PORT: ${{ inputs.host_port }}
+          CONTAINER_ENV_FILE_INPUT: ${{ inputs.container_env_file }}
+          CONTAINER_ENV_FILE_SECRET: ${{ secrets.CONTAINER_ENV_FILE }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PAT }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          envs: IMAGE_REF,CONTAINER_NAME,APP_PORT,HOST_PORT,CONTAINER_ENV_FILE_INPUT,CONTAINER_ENV_FILE_SECRET,GHCR_USERNAME,GHCR_TOKEN
+          script: |
+            set -euo pipefail
+
+            echo "$GHCR_TOKEN" | docker login ${{ env.REGISTRY }} -u "$GHCR_USERNAME" --password-stdin
+
+            for i in {1..3}; do
+              docker pull "$IMAGE_REF" && break || sleep 5
+            done
+
+            docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
+            NETWORK_ARG=""
+            if [ -n "${{ inputs.container_network }}" ]; then
+              NETWORK_ARG="--network ${{ inputs.container_network }}"
+            fi
+
+            ENV_FILE_PATH="$CONTAINER_ENV_FILE_INPUT"
+            if [ -z "$ENV_FILE_PATH" ]; then
+              echo "container_env_file must not be empty"
+              exit 1
+            fi
+
+            if [ -n "$CONTAINER_ENV_FILE_SECRET" ]; then
+              mkdir -p "$(dirname "$ENV_FILE_PATH")"
+              printf '%s' "$CONTAINER_ENV_FILE_SECRET" > "$ENV_FILE_PATH"
+              chmod 600 "$ENV_FILE_PATH"
+            fi
+
+            if [ -n "$HOST_PORT" ]; then
+              docker run -d \
+                --name "$CONTAINER_NAME" \
+                ${NETWORK_ARG} \
+                --restart unless-stopped \
+                --env-file "$ENV_FILE_PATH" \
+                -p "${HOST_PORT}:${APP_PORT}" \
+                ${{ inputs.container_env_vars }} \
+                ${{ inputs.container_volumes }} \
+                "$IMAGE_REF"
+            else
+              docker run -d \
+                --name "$CONTAINER_NAME" \
+                ${NETWORK_ARG} \
+                --restart unless-stopped \
+                --env-file "$ENV_FILE_PATH" \
+                ${{ inputs.container_env_vars }} \
+                ${{ inputs.container_volumes }} \
+                "$IMAGE_REF"
+            fi
+
+            sleep 5
+            docker ps --filter "name=$CONTAINER_NAME" --filter "status=running" | grep "$CONTAINER_NAME"
+
+            docker container prune -f
+            docker image prune -af --filter "until=72h"
+            docker builder prune -af --filter "until=72h" || true
+
   deploy-on-k8s:
     runs-on: ubuntu-latest
     if: >
@@ -682,14 +779,11 @@ jobs:
         always() 
         && needs.prepare.result == 'success' 
         && needs.build-and-push.result == 'success' 
-        && (
-              !inputs.security_fail_on_findings
-              || needs.security-scan.outputs.passed == 'true'
-            )
+        && !inputs.security_fail_on_findings
         && inputs.deploy_mode == 'kubernetes' 
         && (github.ref_name == inputs.prod_branch || github.ref_name == inputs.dev_branch) 
       }}
-    needs: [prepare, build-and-push, security-scan]
+    needs: [prepare, build-and-push]
     environment: ${{ needs.prepare.outputs.environment }}
     permissions:
       contents: read
@@ -850,6 +944,184 @@ jobs:
             --namespace "${NAMESPACE}" \
             --timeout=180s
           
+          if kubectl get pods -n "${NAMESPACE}" | grep -E 'ImagePullBackOff|ErrImagePull'; then
+            echo "Detected image pull errors after rollout"
+            exit 1
+          fi
+
+  deploy-on-k8s-gated:
+    runs-on: ubuntu-latest
+    if: >
+      ${{
+        always()
+        && needs.prepare.result == 'success'
+        && needs.build-and-push.result == 'success'
+        && inputs.security_fail_on_findings
+        && (!inputs.security_enabled || needs.security-scan.outputs.passed == 'true')
+        && inputs.deploy_mode == 'kubernetes'
+        && (github.ref_name == inputs.prod_branch || github.ref_name == inputs.dev_branch)
+      }}
+    needs: [prepare, build-and-push, security-scan]
+    environment: ${{ needs.prepare.outputs.environment }}
+    permissions:
+      contents: read
+    env:
+      CLOUDFLEET_ACCESS_TOKEN_ID: ${{ secrets.CLOUDFLEET_ACCESS_TOKEN_ID }}
+      CLOUDFLEET_ACCESS_TOKEN_SECRET: ${{ secrets.CLOUDFLEET_ACCESS_TOKEN_SECRET }}
+      CLOUDFLEET_ORGANIZATION_ID: ${{ secrets.CLOUDFLEET_ORGANIZATION_ID }}
+      NAMESPACE: ${{ needs.prepare.outputs.namespace }}
+
+    steps:
+      - name: Check required CLOUDFLEET and templates secrets
+        shell: bash
+        run: |
+          set -e
+          [ -n "${{ secrets.CLOUDFLEET_ACCESS_TOKEN_ID }}" ] || { echo "CLOUDFLEET_ACCESS_TOKEN_ID is required"; exit 1; }
+          [ -n "${{ secrets.CLOUDFLEET_ACCESS_TOKEN_SECRET }}" ] || { echo "CLOUDFLEET_ACCESS_TOKEN_SECRET is required"; exit 1; }
+          [ -n "${{ secrets.CLOUDFLEET_ORGANIZATION_ID }}" ] || { echo "CLOUDFLEET_ORGANIZATION_ID is required"; exit 1; }
+          [ -n "${{ secrets.CLOUDFLEET_CLUSTER_ID }}" ] || { echo "CLOUDFLEET_CLUSTER_ID is required"; exit 1; }
+
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+        with:
+          path: app
+
+      - name: Checkout templates repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.templates_repo }}
+          ref: ${{ inputs.templates_ref }}
+          path: helm-chart
+          sparse-checkout: |
+            ${{ inputs.templates_chart_path }}
+          sparse-checkout-cone-mode: false
+
+      - name: Install Cloudfleet CLI
+        env:
+          NONINTERACTIVE: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://downloads.cloudfleet.ai/apt/pubkey.gpg | sudo tee /usr/share/keyrings/cloudfleet-archive-keyring.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/cloudfleet-archive-keyring.gpg] https://downloads.cloudfleet.ai/apt stable main" | sudo tee /etc/apt/sources.list.d/cloudfleet.list
+          sudo apt update
+          sudo apt install -y cloudfleet
+
+      - name: Configure kubeconfig
+        shell: bash
+        run: |
+          set -euo pipefail
+          cloudfleet clusters kubeconfig ${{ secrets.CLOUDFLEET_CLUSTER_ID }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: latest
+
+      - name: Ensure namespace and registry secret exist
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+
+          if ! kubectl get secret ghcr-secret --namespace "${NAMESPACE}" >/dev/null 2>&1; then
+            kubectl create secret docker-registry ghcr-secret \
+              --namespace "${NAMESPACE}" \
+              --docker-server="${{ env.REGISTRY }}" \
+              --docker-username="${{ secrets.GHCR_USERNAME }}" \
+              --docker-password="${{ secrets.GHCR_PAT }}"
+          fi
+
+      - name: Debug checked out files
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== app ==="
+          find app -maxdepth 3 -type f | sort
+          echo "=== templates ==="
+          find helm-chart -maxdepth 4 -type f | sort
+
+      - name: Helm template validation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VALUES_ARGS=()
+
+          if [ -n "${{ inputs.values_files }}" ]; then
+            while IFS= read -r file; do
+              if [ -n "$file" ]; then
+                VALUES_ARGS+=(-f "app/$file")
+              fi
+            done <<'EOF'
+          ${{ inputs.values_files }}
+          EOF
+          fi
+
+          helm template "${{ inputs.release_name }}" "helm-chart/${{ inputs.templates_chart_path }}" \
+          "${VALUES_ARGS[@]}" \
+          --set "image.repository=${{ env.REGISTRY }}" \
+          --set "image.image=${{ inputs.image_name }}" \
+          --set "image.tag=${{ needs.prepare.outputs.image_tag }}"
+
+      - name: Deploy to Kubernetes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VALUES_ARGS=()
+
+          if [ -n "${{ inputs.values_files }}" ]; then
+            while IFS= read -r file; do
+              if [ -n "$file" ]; then
+                VALUES_ARGS+=(-f "app/$file")
+              fi
+            done <<'EOF'
+          ${{ inputs.values_files }}
+          EOF
+          fi
+
+          CHART_PATH="helm-chart/${{ inputs.templates_chart_path }}"
+
+          helm upgrade --install "${{ inputs.release_name }}" "${CHART_PATH}" \
+          "${VALUES_ARGS[@]}" \
+          --namespace "${NAMESPACE}" \
+          --create-namespace \
+          --set "image.repository=${{ env.REGISTRY }}" \
+          --set "image.image=${{ inputs.image_name }}" \
+          --set "image.tag=${{ needs.prepare.outputs.image_tag }}"
+
+      - name: Verify imagePullSecrets configuration
+        if: ${{ inputs.verify_rollout_name != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_PULL_SECRETS=$(kubectl get deployment "${{ inputs.verify_rollout_name }}" \
+            --namespace "${NAMESPACE}" \
+            -o jsonpath='{.spec.template.spec.imagePullSecrets[*].name}')
+
+          echo "Deployment imagePullSecrets: ${IMAGE_PULL_SECRETS}"
+
+          if [[ "${IMAGE_PULL_SECRETS}" != *ghcr-secret* ]]; then
+            echo "Deployment '${{ inputs.verify_rollout_name }}' does not reference ghcr-secret"
+            exit 1
+          fi
+
+      - name: Verify rollout
+        if: ${{ inputs.verify_rollout_name != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          kubectl rollout status deployment/${{ inputs.verify_rollout_name }} \
+            --namespace "${NAMESPACE}" \
+            --timeout=180s
+
           if kubectl get pods -n "${NAMESPACE}" | grep -E 'ImagePullBackOff|ErrImagePull'; then
             echo "Detected image pull errors after rollout"
             exit 1
