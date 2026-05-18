@@ -228,6 +228,8 @@ on:
         required: false
       BUILD_ARGS:
         required: false
+      CONTAINER_ENV_VARS:
+        required: false
 
 concurrency:
   group: deploy-${{ inputs.component_name }}-${{ github.ref_name }}
