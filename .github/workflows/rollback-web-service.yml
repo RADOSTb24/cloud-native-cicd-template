@@ -35,6 +35,12 @@ on:
         required: true
         type: string
 
+      container_env_file:
+        description: "Path to env file for SSH rollback. If CONTAINER_ENV_FILE secret is set, its content is written to this path."
+        required: false
+        default: "~/env/.env"
+        type: string
+
       container_env_vars:
         description: "Optional extra docker run env arguments"
         required: false
@@ -119,6 +125,8 @@ on:
         required: false
       SSH_PORT:
         required: false
+      CONTAINER_ENV_FILE:
+        required: false
 
       CLOUDFLEET_ACCESS_TOKEN_ID:
         required: false
@@ -195,6 +203,8 @@ jobs:
           CONTAINER_NAME: ${{ inputs.container_name }}
           APP_PORT: ${{ inputs.app_port }}
           HOST_PORT: ${{ inputs.host_port }}
+          CONTAINER_ENV_FILE_INPUT: ${{ inputs.container_env_file }}
+          CONTAINER_ENV_FILE_SECRET: ${{ secrets.CONTAINER_ENV_FILE }}
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_PAT }}
         with:
@@ -202,7 +212,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
-          envs: IMAGE_REF,CONTAINER_NAME,APP_PORT,HOST_PORT,GHCR_USERNAME,GHCR_TOKEN
+          envs: IMAGE_REF,CONTAINER_NAME,APP_PORT,HOST_PORT,CONTAINER_ENV_FILE_INPUT,CONTAINER_ENV_FILE_SECRET,GHCR_USERNAME,GHCR_TOKEN
           script: |
             set -euo pipefail
 
@@ -219,11 +229,24 @@ jobs:
               NETWORK_ARG="--network ${{ inputs.container_network }}"
             fi
 
+            ENV_FILE_PATH="$CONTAINER_ENV_FILE_INPUT"
+            if [ -z "$ENV_FILE_PATH" ]; then
+              echo "container_env_file must not be empty"
+              exit 1
+            fi
+
+            if [ -n "$CONTAINER_ENV_FILE_SECRET" ]; then
+              mkdir -p "$(dirname "$ENV_FILE_PATH")"
+              printf '%s' "$CONTAINER_ENV_FILE_SECRET" > "$ENV_FILE_PATH"
+              chmod 600 "$ENV_FILE_PATH"
+            fi
+
             if [ -n "$HOST_PORT" ]; then
               docker run -d \
                 --name "$CONTAINER_NAME" \
                 ${NETWORK_ARG} \
                 --restart unless-stopped \
+                --env-file "$ENV_FILE_PATH" \
                 -p "${HOST_PORT}:${APP_PORT}" \
                 ${{ inputs.container_env_vars }} \
                 ${{ inputs.container_volumes }} \
@@ -233,6 +256,7 @@ jobs:
                 --name "$CONTAINER_NAME" \
                 ${NETWORK_ARG} \
                 --restart unless-stopped \
+                --env-file "$ENV_FILE_PATH" \
                 ${{ inputs.container_env_vars }} \
                 ${{ inputs.container_volumes }} \
                 "$IMAGE_REF"
